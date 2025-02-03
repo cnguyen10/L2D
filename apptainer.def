@@ -1,0 +1,34 @@
+BootStrap: docker
+# change to the docker image with your CUDA version
+# do not use Ubuntu24.04 because Python 3.13 may cause incompatible issues
+From: nvidia/cuda:12.4.0-base-ubuntu22.04
+
+%environment
+    export PATH=/app/venv/bin:$PATH
+
+%post
+    apt -y update
+    apt -y install python3 python3-pip python3-venv
+    python3 -m venv /app/venv
+    cd /app
+
+    /app/venv/bin/pip3 install -U "jax[cuda12]"
+    /app/venv/bin/pip3 install -U flax
+    /app/venv/bin/pip3 install -U optax
+    /app/venv/bin/pip3 install -U orbax-checkpoint
+    /app/venv/bin/pip3 install -U jaxopt
+    /app/venv/bin/pip3 install einops
+    /app/venv/bin/pip3 install dm-pix
+    /app/venv/bin/pip3 install hydra-core
+    /app/venv/bin/pip3 install mlflow
+    /app/venv/bin/pip3 install tqdm
+    /app/venv/bin/pip3 install mlx-data
+
+    # install the correct numpy version, otherwise `mlx-data` fails
+    /app/venv/bin/pip3 install numpy==1.26.4
+
+%runscript
+    /app/venv/bin/python
+
+%help
+    Ubuntu 22.04 with Jax
