@@ -144,15 +144,15 @@ def unconstrained_posterior(
     """
     """
     # CALCULATE Pr(y | z, t)
-    log_p_y_zt = y[:, None, :] * jnp.log(t)  # (batch, num_annotations, num_classes)
-    log_p_y_zt = jnp.sum(a=log_p_y_zt, axis=-1)  # (batch, num_annotations)
+    log_p_y_zt = y[:, None, :] * jnp.log(t)  # (batch, num_experts, num_classes)
+    log_p_y_zt = jnp.sum(a=log_p_y_zt, axis=-1)  # (batch, num_experts)
 
     # P(z | x, gamma)
-    logit_p_z_x_gamma = gating_model(x)  # (batch, num_annotations)
+    logit_p_z_x_gamma = gating_model(x)  # (batch, num_experts)
     log_p_z_x_gamma = jax.nn.log_softmax(x=logit_p_z_x_gamma, axis=-1)
 
     # Pr(z | x, y, t)
-    log_p_z_xyt = log_p_y_zt + log_p_z_x_gamma  # (batch, num_annotations)
+    log_p_z_xyt = log_p_y_zt + log_p_z_x_gamma  # (batch, num_experts)
     log_p_z_xyt = log_p_z_xyt - jax.nn.logsumexp(a=log_p_z_xyt, axis=-1, keepdims=True)
     p_z_xyt = jnp.exp(log_p_z_xyt)
 
@@ -237,7 +237,7 @@ def expectation_maximisation(
 ) -> tuple[nnx.Optimizer, jax.Array, dict[str, jax.Array]]:
     """perform the variational EM
     """
-    t = jax.nn.one_hot(x=t, num_classes=cfg.dataset.num_classes)  # (batch, num_annotations, num_classes)
+    t = jax.nn.one_hot(x=t, num_classes=cfg.dataset.num_classes)  # (batch, num_experts, num_classes)
     t = optax.smooth_labels(labels=t, alpha=0.01)
 
     y = jax.nn.one_hot(x=y, num_classes=cfg.dataset.num_classes)  # (batch, num_classes)
@@ -252,7 +252,7 @@ def expectation_maximisation(
     p_clf = jax.nn.softmax(x=logits_clf, axis=-1)  # (batch, num_classes)
 
     # concatenate to annotations
-    t = jnp.concatenate(arrays=(t, p_clf[:, None, :]), axis=1)  # (batch, num_annotations + 1, num_classes)
+    t = jnp.concatenate(arrays=(t, p_clf[:, None, :]), axis=1)  # (batch, num_experts + 1, num_classes)
 
     # gating
     grad_fn_gating = nnx.value_and_grad(f=variational_free_energy, argnums=0)
@@ -316,7 +316,7 @@ def train(
         disable=not cfg.data_loading.progress_bar
     ):
         x = jnp.asarray(a=samples['image'], dtype=jnp.float32)  # input samples
-        t = jnp.asarray(a=samples['label'], dtype=jnp.int32)  # annotated labels (batch, num_annotations)
+        t = jnp.asarray(a=samples['label'], dtype=jnp.int32)  # annotated labels (batch, num_experts)
         y = jnp.asarray(a=samples['ground_truth'], dtype=jnp.int32)  # (batch,)
 
         gating, clf, loss_dict = expectation_maximisation(
