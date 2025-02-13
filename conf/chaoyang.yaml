@@ -1,0 +1,33 @@
+dataset:
+  name: Chaoyang
+  root: /sda2/datasets/chaoyang
+  num_classes: 4
+  noise_rate: 0.
+  train_files:
+    - ${dataset.root}/annotations_3/label_A_train.json
+    - ${dataset.root}/annotations_3/label_B_train.json
+    - ${dataset.root}/annotations_3/label_C_train.json
+  train_ground_truth_file: ${dataset.root}/annotations_3/train.json
+  test_files:
+    - ${dataset.root}/annotations_3/label_A_test.json
+    - ${dataset.root}/annotations_3/label_B_test.json
+    - ${dataset.root}/annotations_3/label_C_test.json
+  test_ground_truth_file: ${dataset.root}/annotations_3/test.json
+  resized_shape: [256, 256]
+  crop_size: [224, 224]
+  mean: null
+  std: null
+
+model:
+  _partial_: True
+  _target_: models.ResNet.ResNet18
+
+training:
+  lr: 0.01
+  batch_size: 64
+  num_epochs: 100
+  clipped_norm: null
+
+hparams:
+  epsilon_lower: [0., 0., 0.]
+  epsilon_upper: [0.34, 0.33, 0.33]

@@ -1,0 +1,43 @@
+dataset:
+  name: MiceBone
+  root: /sda2/datasets/MiceBone
+  num_classes: 3
+  noise_rate: 0.
+  train_files:
+    - ${dataset.root}/split_folds/Id_290_not_fold5.json
+    - ${dataset.root}/split_folds/Id_47_not_fold5.json
+    - ${dataset.root}/split_folds/Id_533_not_fold5.json
+    - ${dataset.root}/split_folds/Id_534_not_fold5.json
+    - ${dataset.root}/split_folds/Id_580_not_fold5.json
+    - ${dataset.root}/split_folds/Id_581_not_fold5.json
+    - ${dataset.root}/split_folds/Id_745_not_fold5.json
+    - ${dataset.root}/split_folds/Id_966_not_fold5.json
+  train_ground_truth_file: ${dataset.root}/split_folds/majority_vote_not_fold5.json
+  test_files:
+    - ${dataset.root}/split_folds/Id_290_fold5.json
+    - ${dataset.root}/split_folds/Id_47_fold5.json
+    - ${dataset.root}/split_folds/Id_533_fold5.json
+    - ${dataset.root}/split_folds/Id_534_fold5.json
+    - ${dataset.root}/split_folds/Id_580_fold5.json
+    - ${dataset.root}/split_folds/Id_581_fold5.json
+    - ${dataset.root}/split_folds/Id_745_fold5.json
+    - ${dataset.root}/split_folds/Id_966_fold5.json
+  test_ground_truth_file: ${dataset.root}/split_folds/majority_vote_fold5.json
+  resized_shape: null
+  crop_size: [224, 224]
+  mean: null
+  std: null
+
+model:
+  _partial_: True
+  _target_: models.ResNet.ResNet18
+
+training:
+  lr: 0.00075
+  batch_size: 64
+  num_epochs: 300
+  clipped_norm: null
+
+hparams:
+  epsilon_lower: [0., 0., 0., 0., 0., 0., 0., 0.]
+  epsilon_upper: [0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125]
