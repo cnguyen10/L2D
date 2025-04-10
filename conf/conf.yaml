@@ -19,6 +19,7 @@ training:
   momentum: 0.9
   weight_decay: 0.0005
   seed: 44
+  num_samples: null
 
 hparams:
   num_vi_iters: 10

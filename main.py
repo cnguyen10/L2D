@@ -407,7 +407,9 @@ def main(cfg: DictConfig) -> None:
     datasource_train = ImageDataSource(
         annotation_files=cfg.dataset.train_files,
         ground_truth_file=cfg.dataset.train_ground_truth_file,
-        root=cfg.dataset.root
+        root=cfg.dataset.root,
+        num_samples=cfg.training.num_samples,
+        seed=cfg.training.seed
     )
     datasource_test = ImageDataSource(
         annotation_files=cfg.dataset.test_files,
