@@ -31,5 +31,5 @@ hparams:
   crop_size: [32, 32]
   mean: null
   std: null
-  epsilon_lower: [0., 0., 0., 0., 0.]
-  epsilon_upper: [0.2, 0.2, 0.2, 0.2, 0.2]
+  epsilon_lower: [0., 0., 0., 0.]
+  epsilon_upper: [0.25, 0.25, 0.25, 0.25]

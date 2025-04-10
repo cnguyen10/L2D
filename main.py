@@ -275,32 +275,14 @@ def variational_free_energy(
     return loss
 
 
-def classification_loss(
-    model: nnx.Module,
-    x: jax.Array,
-    y: jax.Array
-) -> jax.Array:
-    """classification loss to train a classifier on ground truth data
-    """
-    logits = model(x)
-    loss = optax.losses.softmax_cross_entropy(
-        logits=logits,
-        labels=y
-    )  # (batch,)
-    loss = jnp.mean(a=loss, axis=0)
-
-    return loss
-
-
-@partial(nnx.jit, static_argnames=('cfg',), donate_argnames=('gating', 'clf'))
+@partial(nnx.jit, static_argnames=('cfg',), donate_argnames=('gating',))
 def expectation_maximisation(
     x: jax.Array,
     t: jax.Array,
     y: jax.Array,
     gating: nnx.Optimizer,
-    clf: nnx.Optimizer,
     cfg: DictConfig
-) -> tuple[nnx.Optimizer, jax.Array, dict[str, jax.Array]]:
+) -> tuple[nnx.Optimizer, float]:
     """perform the variational EM
     """
     t = jax.nn.one_hot(x=t, num_classes=cfg.dataset.num_classes)  # (batch, num_experts, num_classes)
@@ -311,18 +293,9 @@ def expectation_maximisation(
     epsilon_upper = jnp.array(object=cfg.hparams.epsilon_upper)
     epsilon_lower = jnp.array(object=cfg.hparams.epsilon_lower)
 
-    # prediction of classifier
-    clf.model.eval()
-    logits_clf = jax.lax.stop_gradient(x=clf.model(x))
-    clf.model.train()
-    p_clf = jax.nn.softmax(x=logits_clf, axis=-1)  # (batch, num_classes)
-
-    # concatenate to annotations
-    t = jnp.concatenate(arrays=(t, p_clf[:, None, :]), axis=1)  # (batch, num_experts + 1, num_classes)
-
     # gating
     grad_fn_gating = nnx.value_and_grad(f=variational_free_energy, argnums=0)
-    loss_gating, grads_gating = grad_fn_gating(
+    loss, grads_gating = grad_fn_gating(
         gating.model,
         x,
         t,
@@ -334,29 +307,18 @@ def expectation_maximisation(
     # in-place update
     gating.update(grads=grads_gating)
 
-    # classifier
-    grad_fn_clf = nnx.value_and_grad(f=classification_loss, argnums=0)
-    loss_clf, grads_clf = grad_fn_clf(model=clf.model, x=x, y=y)
-    clf.update(grads=grads_clf)
-
-    return gating, clf, {'loss/gating': loss_gating, 'loss/clf': loss_clf}
+    return gating, loss
 
 
 def train(
     dataloader: grain.DatasetIterator,
     gating: nnx.Optimizer,
-    clf: nnx.Optimizer,
     cfg: DictConfig
-) -> tuple[nnx.Optimizer, nnx.Optimizer, dict[str, jax.Array]]:
+) -> tuple[nnx.Optimizer, float]:
     """
     """
-    loss_metrics_dict = {
-        'loss/gating': nnx.metrics.Average(),
-        'loss/clf': nnx.metrics.Average()
-    }
-
+    loss_metric = nnx.metrics.Average()
     gating.model.train()
-    clf.model.train()
 
     for _ in tqdm(
         iterable=range(cfg.dataset.length.train // cfg.training.batch_size),
@@ -372,42 +334,33 @@ def train(
         t = jnp.asarray(a=samples['label'], dtype=jnp.int32)  # annotated labels (batch, num_experts)
         y = jnp.asarray(a=samples['ground_truth'], dtype=jnp.int32)  # (batch,)
 
-        gating, clf, loss_dict = expectation_maximisation(
+        gating, loss = expectation_maximisation(
             x=x,
             t=t,
             y=y,
             gating=gating,
-            clf=clf,
             cfg=cfg
         )
 
-        if jnp.isnan(loss_dict['loss/gating']):
+        if jnp.isnan(loss):
             raise ValueError('Training loss is NaN.')
 
-        for key in loss_dict:
-            loss_metrics_dict[key].update(values=loss_dict[key])
+        loss_metric.update(values=loss)
 
-    for key in loss_metrics_dict:
-        loss_metrics_dict[key] = loss_metrics_dict[key].compute()
-
-    return (gating, clf, loss_metrics_dict)
+    return (gating, loss_metric.compute())
 
 
 def evaluation(
     dataloader: grain.DatasetIterator,
     gating: nnx.Module,
-    clf: nnx.Module,
     cfg: DictConfig
-) -> tuple[jax.Array, jax.Array, jax.Array]:
+) -> jax.Array:
     """
     """
     # set evaluation mode
     gating.eval()
-    clf.eval()
 
     accuracy_accum = nnx.metrics.Accuracy()
-    clf_accuracy = nnx.metrics.Accuracy()
-    coverage = nnx.metrics.Average()
 
     for _ in tqdm(
         iterable=range(cfg.dataset.length.train // cfg.training.batch_size),
@@ -432,18 +385,11 @@ def evaluation(
 
         selected_expert_ids = jnp.argmax(a=logits_p_z, axis=-1)  # (batch_size,)
 
-        coverage.update(values=(selected_expert_ids == len(cfg.dataset.test_files)) * 1)
-
         # accuracy
-        logits_clf = clf(x)  # (batch_size, num_classes)
-        human_and_model_predictions = jnp.concatenate(arrays=(t, logits_clf[:, None, :]), axis=1)
-        queried_predictions = human_and_model_predictions[jnp.arange(len(x)), selected_expert_ids, :]
+        queried_predictions = t[jnp.arange(len(x)), selected_expert_ids, :]
         accuracy_accum.update(logits=queried_predictions, labels=y)
 
-        # classifier accuracy
-        clf_accuracy.update(logits=logits_clf, labels=y)
-
-    return (accuracy_accum.compute(), clf_accuracy.compute(), coverage.compute())
+    return accuracy_accum.compute()
 
 
 @hydra.main(version_base=None, config_path="./conf", config_name="conf")
@@ -489,16 +435,7 @@ def main(cfg: DictConfig) -> None:
 
     gating = nnx.Optimizer(
         model=model_fn(
-            num_classes=len(cfg.dataset.train_files) + 1,
-            rngs=nnx.Rngs(jax.random.PRNGKey(seed=random.randint(a=0, b=1_000))),
-            dtype=eval(cfg.jax.dtype)
-        ),
-        tx=init_tx(dataset_length=len(datasource_train), cfg=cfg)
-    )
-
-    clf = nnx.Optimizer(
-        model=model_fn(
-            num_classes=cfg.dataset.num_classes,
+            num_classes=len(cfg.dataset.train_files),
             rngs=nnx.Rngs(jax.random.PRNGKey(seed=random.randint(a=0, b=1_000))),
             dtype=eval(cfg.jax.dtype)
         ),
@@ -539,8 +476,7 @@ def main(cfg: DictConfig) -> None:
         # enable an orbax checkpoint manager to save model's parameters
         with ocp.CheckpointManager(
             directory=ckpt_dir,
-            options=ckpt_options,
-            item_names=('gating', 'clf')
+            options=ckpt_options
         ) as ckpt_mngr:
             # region LOGGING and RESTORING
             if cfg.experiment.run_id is None:
@@ -561,14 +497,10 @@ def main(cfg: DictConfig) -> None:
 
                 checkpoint = ckpt_mngr.restore(
                     step=start_epoch_id,
-                    args=ocp.args.Composite(
-                        gating=ocp.args.StandardRestore(item=nnx.state(node=gating.model)),
-                        clf=ocp.args.StandardRestore(item=nnx.state(node=clf.model))
-                    )
+                    args=ocp.args.StandardRestore(item=nnx.state(node=gating.model))
                 )
 
-                nnx.update(gating.model, checkpoint.gating)
-                nnx.update(clf.model, checkpoint.clf)
+                nnx.update(gating.model, checkpoint)
 
                 del checkpoint
             # endregion
@@ -617,33 +549,21 @@ def main(cfg: DictConfig) -> None:
                 disable=not cfg.data_loading.progress_bar
             ):
                 # training
-                gating, clf, loss_dict = train(
+                gating, loss = train(
                     dataloader=dataloader_train,
                     gating=gating,
-                    clf=clf,
                     cfg=cfg
-                )
-
-                mlflow.log_metrics(
-                    metrics=loss_dict,
-                    step=epoch_id + 1,
-                    synchronous=False
                 )
 
                 # evaluation
-                accuracy, clf_accuracy, coverage = evaluation(
+                accuracy = evaluation(
                     dataloader=dataloader_test,
                     gating=gating.model,
-                    clf=clf.model,
                     cfg=cfg
                 )
 
                 mlflow.log_metrics(
-                    metrics={
-                        'accuracy/l2d': accuracy,
-                        'accuracy/clf': clf_accuracy,
-                        'coverage/clf': coverage
-                    },
+                    metrics={'loss': loss, 'accuracy': accuracy},
                     step=epoch_id + 1,
                     synchronous=False
                 )
@@ -654,10 +574,7 @@ def main(cfg: DictConfig) -> None:
                 # save parameters asynchronously
                 ckpt_mngr.save(
                     step=epoch_id + 1,
-                    args=ocp.args.Composite(
-                        gating=ocp.args.StandardSave(nnx.state(node=gating.model)),
-                        clf=ocp.args.StandardSave(nnx.state(node=clf.model))
-                    )
+                    args=ocp.args.StandardSave(nnx.state(node=gating.model))
                 )
 
     return None
