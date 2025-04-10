@@ -22,12 +22,13 @@ training:
 
 hparams:
   num_vi_iters: 10
+  prob_random_h_flip: 0.5
 
 data_loading:
   progress_bar: True
-  num_threads: 4
+  num_workers: 4
+  num_threads: 2
   prefetch_size: 8
-  prob_random_h_flip: 0.5
 
 jax:
   platform: cuda

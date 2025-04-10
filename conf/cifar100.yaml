@@ -1,6 +1,6 @@
 dataset:
   name: cifar100
-  root: /sda2/datasets/cifar100/ciFAIR-100
+  root: /home/cn0025/datasets/cifar100/ciFAIR-100
   num_classes: 100
   noise_rate: 0.7
   train_files:
@@ -15,10 +15,6 @@ dataset:
     - ${dataset.root}/synthetic_experts_2/test_5_6_7_8_9_10_11_12_13_14_15_16_17_18_19_${dataset.noise_rate}_13.json
     - ${dataset.root}/synthetic_experts_2/test_5_6_7_8_9_10_11_12_13_14_15_16_17_18_19_${dataset.noise_rate}_14.json
   test_ground_truth_file: ${dataset.root}/test.json
-  resized_shape: null
-  crop_size: [32, 32]
-  mean: null
-  std: null
 
 model:
   _partial_: True
@@ -31,5 +27,9 @@ training:
   clipped_norm: 10
 
 hparams:
+  resize: null
+  crop_size: [32, 32]
+  mean: null
+  std: null
   epsilon_lower: [0., 0., 0., 0., 0.]
   epsilon_upper: [0.2, 0.2, 0.2, 0.2, 0.2]

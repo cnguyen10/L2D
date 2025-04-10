@@ -21,11 +21,18 @@ import orbax.checkpoint as ocp
 from jaxopt import ProjectedGradient
 from jaxopt.projection import projection_non_negative
 
-from mlx import data as dx
-
 import mlflow
 
-from utils import make_dataset, prepare_dataset
+import grain.python as grain
+
+from DataSource import ImageDataSource
+from transformations import (
+    RandomCrop,
+    Resize,
+    RandomHorizontalFlip,
+    Normalize,
+    ToFloat
+)
 
 
 def init_tx(dataset_length: int, cfg: DictConfig) -> optax.GradientTransformationExtraArgs:
@@ -56,6 +63,65 @@ def init_tx(dataset_length: int, cfg: DictConfig) -> optax.GradientTransformatio
     )
 
     return tx
+
+
+def initialize_dataloader(
+    data_source: grain.RandomAccessDataSource,
+    num_epochs: int,
+    shuffle: bool,
+    seed: int,
+    batch_size: int,
+    crop_size: tuple[int, int] = None,
+    resize: tuple[int, int] = None,
+    mean: float = None,
+    std: float = None,
+    prob_random_h_flip: float = None,
+    num_workers: int = 0,
+    num_threads: int = 1,
+    prefetch_size: int = 1
+) -> grain.IterDataset:
+    """
+    """
+    index_sampler = grain.IndexSampler(
+        num_records=len(data_source),
+        num_epochs=num_epochs,
+        shuffle=shuffle,
+        shard_options=grain.NoSharding(),
+        seed=seed  # set the random seed
+    )
+
+    transformations = []
+    if crop_size is not None:
+        transformations.append(RandomCrop(crop_size=crop_size))
+    if resize is not None:
+        transformations.append(Resize(resize_shape=resize))
+
+    transformations.append(RandomHorizontalFlip(p=prob_random_h_flip))
+    transformations.append(ToFloat())
+
+    if mean is not None and std is not None:
+        transformations.append(Normalize(mean=mean, std=std))
+
+    transformations.append(
+        grain.Batch(
+            batch_size=batch_size,
+            drop_remainder=shuffle
+        )
+    )
+
+    data_loader = grain.DataLoader(
+        data_source=data_source,
+        sampler=index_sampler,
+        operations=transformations,
+        worker_count=num_workers,
+        shard_options=grain.NoSharding(),
+        read_options=grain.ReadOptions(
+            num_threads=num_threads,
+            prefetch_buffer_size=prefetch_size
+        )
+    )
+
+    return iter(data_loader)
 
 
 @jax.jit
@@ -277,26 +343,13 @@ def expectation_maximisation(
 
 
 def train(
-    dataset: dx._c.Buffer,
+    dataloader: grain.DatasetIterator,
     gating: nnx.Optimizer,
     clf: nnx.Optimizer,
     cfg: DictConfig
 ) -> tuple[nnx.Optimizer, nnx.Optimizer, dict[str, jax.Array]]:
     """
     """
-    # shuffle and batch the dataset
-    data_stream = prepare_dataset(
-        dataset=dataset,
-        shuffle=True,
-        batch_size=cfg.training.batch_size,
-        prefetch_size=cfg.data_loading.prefetch_size,
-        num_threads=cfg.data_loading.num_threads,
-        mean=cfg.dataset.mean,
-        std=cfg.dataset.std,
-        random_crop_size=cfg.dataset.crop_size,
-        prob_random_h_flip=cfg.data_loading.prob_random_h_flip
-    )
-
     loss_metrics_dict = {
         'loss/gating': nnx.metrics.Average(),
         'loss/clf': nnx.metrics.Average()
@@ -305,16 +358,16 @@ def train(
     gating.model.train()
     clf.model.train()
 
-    for samples in tqdm(
-        iterable=data_stream,
+    for _ in tqdm(
+        iterable=range(cfg.dataset.length.train // cfg.training.batch_size),
         desc='train',
-        total=len(dataset) // cfg.training.batch_size + 1,
         ncols=80,
         leave=False,
         position=2,
         colour='blue',
         disable=not cfg.data_loading.progress_bar
     ):
+        samples = next(dataloader)
         x = jnp.asarray(a=samples['image'], dtype=jnp.float32)  # input samples
         t = jnp.asarray(a=samples['label'], dtype=jnp.int32)  # annotated labels (batch, num_experts)
         y = jnp.asarray(a=samples['ground_truth'], dtype=jnp.int32)  # (batch,)
@@ -341,7 +394,7 @@ def train(
 
 
 def evaluation(
-    dataset: dx._c.Buffer,
+    dataloader: grain.DatasetIterator,
     gating: nnx.Module,
     clf: nnx.Module,
     cfg: DictConfig
@@ -352,33 +405,20 @@ def evaluation(
     gating.eval()
     clf.eval()
 
-    # shuffle and batch the dataset
-    data_stream = prepare_dataset(
-        dataset=dataset,
-        shuffle=True,
-        batch_size=cfg.training.batch_size,
-        prefetch_size=cfg.data_loading.prefetch_size,
-        num_threads=cfg.data_loading.num_threads,
-        mean=cfg.dataset.mean,
-        std=cfg.dataset.std,
-        random_crop_size=cfg.dataset.crop_size,
-        prob_random_h_flip=cfg.data_loading.prob_random_h_flip
-    )
-
     accuracy_accum = nnx.metrics.Accuracy()
     clf_accuracy = nnx.metrics.Accuracy()
     coverage = nnx.metrics.Average()
 
-    for samples in tqdm(
-        iterable=data_stream,
+    for _ in tqdm(
+        iterable=range(cfg.dataset.length.train // cfg.training.batch_size),
         desc='eval',
-        total=len(dataset) // cfg.training.batch_size + 1,
         ncols=80,
         leave=False,
         position=2,
         colour='blue',
         disable=not cfg.data_loading.progress_bar
     ):
+        samples = next(dataloader)
         x = jnp.asarray(a=samples['image'], dtype=jnp.float32)  # input samples
         y = jnp.asarray(a=samples['ground_truth'], dtype=jnp.int32)  # true labels (batch_size,)
         t = jnp.asarray(a=samples['label'], dtype=jnp.int32)  # annotated labels (batch_size, num_experts)
@@ -389,7 +429,6 @@ def evaluation(
         logits_p_z = gating(x)  # (batch_size, num_experts)
         if jnp.isnan(logits_p_z).any():
             raise ValueError('NaN detected in the output of gating function.')
-        log_p_z = jax.nn.log_softmax(x=logits_p_z, axis=-1)
 
         selected_expert_ids = jnp.argmax(a=logits_p_z, axis=-1)  # (batch_size,)
 
@@ -419,18 +458,29 @@ def main(cfg: DictConfig) -> None:
     # endregion
 
     # region DATASETS
-    dataset_train = make_dataset(
+    datasource_train = ImageDataSource(
         annotation_files=cfg.dataset.train_files,
         ground_truth_file=cfg.dataset.train_ground_truth_file,
-        root=cfg.dataset.root,
-        shape=cfg.dataset.resized_shape
+        root=cfg.dataset.root
     )
-
-    dataset_test = make_dataset(
+    datasource_test = ImageDataSource(
         annotation_files=cfg.dataset.test_files,
         ground_truth_file=cfg.dataset.test_ground_truth_file,
-        root=cfg.dataset.root,
-        shape=cfg.dataset.resized_shape
+        root=cfg.dataset.root
+    )
+
+    OmegaConf.set_struct(conf=cfg, value=True)
+    OmegaConf.update(
+        cfg=cfg,
+        key='dataset.length.train',
+        value=len(datasource_train),
+        force_add=True
+    )
+    OmegaConf.update(
+        cfg=cfg,
+        key='dataset.length.test',
+        value=len(datasource_test),
+        force_add=True
     )
     # endregion
 
@@ -443,7 +493,7 @@ def main(cfg: DictConfig) -> None:
             rngs=nnx.Rngs(jax.random.PRNGKey(seed=random.randint(a=0, b=1_000))),
             dtype=eval(cfg.jax.dtype)
         ),
-        tx=init_tx(dataset_length=len(dataset_train), cfg=cfg)
+        tx=init_tx(dataset_length=len(datasource_train), cfg=cfg)
     )
 
     clf = nnx.Optimizer(
@@ -452,7 +502,7 @@ def main(cfg: DictConfig) -> None:
             rngs=nnx.Rngs(jax.random.PRNGKey(seed=random.randint(a=0, b=1_000))),
             dtype=eval(cfg.jax.dtype)
         ),
-        tx=init_tx(dataset_length=len(dataset_train), cfg=cfg)
+        tx=init_tx(dataset_length=len(datasource_train), cfg=cfg)
     )
 
     # options to store models
@@ -523,6 +573,40 @@ def main(cfg: DictConfig) -> None:
                 del checkpoint
             # endregion
 
+            # region DATA LOADERS
+            dataloader_train = initialize_dataloader(
+                data_source=datasource_train,
+                num_epochs=cfg.training.num_epochs - start_epoch_id,
+                shuffle=True,
+                seed=random.randint(a=0, b=255),
+                batch_size=cfg.training.batch_size,
+                crop_size=cfg.hparams.crop_size,
+                resize=cfg.hparams.resize,
+                mean=cfg.hparams.mean,
+                std=cfg.hparams.std,
+                prob_random_h_flip=cfg.hparams.prob_random_h_flip,
+                num_workers=cfg.data_loading.num_workers,
+                num_threads=cfg.data_loading.num_threads,
+                prefetch_size=cfg.data_loading.prefetch_size
+            )
+
+            dataloader_test = initialize_dataloader(
+                data_source=datasource_test,
+                num_epochs=cfg.training.num_epochs - start_epoch_id,
+                shuffle=False,
+                seed=random.randint(a=0, b=255),
+                batch_size=cfg.training.batch_size,
+                crop_size=cfg.hparams.crop_size,
+                resize=cfg.hparams.resize,
+                mean=cfg.hparams.mean,
+                std=cfg.hparams.std,
+                prob_random_h_flip=cfg.hparams.prob_random_h_flip,
+                num_workers=cfg.data_loading.num_workers,
+                num_threads=cfg.data_loading.num_threads,
+                prefetch_size=cfg.data_loading.prefetch_size
+            )
+            # endregion
+
             for epoch_id in tqdm(
                 iterable=range(start_epoch_id, cfg.training.num_epochs, 1),
                 desc='progress',
@@ -534,7 +618,7 @@ def main(cfg: DictConfig) -> None:
             ):
                 # training
                 gating, clf, loss_dict = train(
-                    dataset=dataset_train,
+                    dataloader=dataloader_train,
                     gating=gating,
                     clf=clf,
                     cfg=cfg
@@ -548,7 +632,7 @@ def main(cfg: DictConfig) -> None:
 
                 # evaluation
                 accuracy, clf_accuracy, coverage = evaluation(
-                    dataset=dataset_test,
+                    dataloader=dataloader_test,
                     gating=gating.model,
                     clf=clf.model,
                     cfg=cfg
