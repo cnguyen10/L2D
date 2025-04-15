@@ -22,7 +22,6 @@ training:
   num_samples: null
 
 hparams:
-  num_vi_iters: 10
   prob_random_h_flip: 0.5
 
 data_loading:
@@ -33,6 +32,6 @@ data_loading:
 
 jax:
   platform: cuda
-  mem: 0.4
+  mem: 0.9
   disable_jit: False
   dtype: jnp.bfloat16
