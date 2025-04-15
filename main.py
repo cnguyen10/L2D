@@ -91,10 +91,12 @@ def initialize_dataloader(
     )
 
     transformations = []
-    if crop_size is not None:
-        transformations.append(RandomCrop(crop_size=crop_size))
+
     if resize is not None:
         transformations.append(Resize(resize_shape=resize))
+
+    if crop_size is not None:
+        transformations.append(RandomCrop(crop_size=crop_size))
 
     transformations.append(RandomHorizontalFlip(p=prob_random_h_flip))
     transformations.append(ToFloat())
@@ -410,7 +412,7 @@ def evaluation(
     coverage = nnx.metrics.Average()
 
     for _ in tqdm(
-        iterable=range(cfg.dataset.length.train // cfg.training.batch_size),
+        iterable=range(cfg.dataset.length.test // cfg.training.batch_size),
         desc='eval',
         ncols=80,
         leave=False,
