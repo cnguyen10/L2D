@@ -1,0 +1,63 @@
+dataset:
+  name: flickr
+  root: /sda2/datasets/flickr
+  num_classes: 8
+  train_files:
+    - ${dataset.root}/annotators_seed0_p0.75/train/annotator_0.json
+    - ${dataset.root}/annotators_seed0_p0.75/train/annotator_1.json
+    - ${dataset.root}/annotators_seed0_p0.75/train/annotator_2.json
+    - ${dataset.root}/annotators_seed0_p0.75/train/annotator_3.json
+    - ${dataset.root}/annotators_seed0_p0.75/train/annotator_4.json
+    - ${dataset.root}/annotators_seed0_p0.75/train/annotator_5.json
+    - ${dataset.root}/annotators_seed0_p0.75/train/annotator_6.json
+    - ${dataset.root}/annotators_seed0_p0.75/train/annotator_7.json
+    - ${dataset.root}/annotators_seed0_p0.75/train/annotator_8.json
+    - ${dataset.root}/annotators_seed0_p0.75/train/annotator_9.json
+    - ${dataset.root}/annotators_seed0_p0.75/train/annotator_10.json
+  train_ground_truth_file: ${dataset.root}/annotators_seed0_p0.75/train/ground_truth.json
+  test_files:
+    - ${dataset.root}/annotators_seed0_p0.75/test/annotator_0.json
+    - ${dataset.root}/annotators_seed0_p0.75/test/annotator_1.json
+    - ${dataset.root}/annotators_seed0_p0.75/test/annotator_2.json
+    - ${dataset.root}/annotators_seed0_p0.75/test/annotator_3.json
+    - ${dataset.root}/annotators_seed0_p0.75/test/annotator_4.json
+    - ${dataset.root}/annotators_seed0_p0.75/test/annotator_5.json
+    - ${dataset.root}/annotators_seed0_p0.75/test/annotator_6.json
+    - ${dataset.root}/annotators_seed0_p0.75/test/annotator_7.json
+    - ${dataset.root}/annotators_seed0_p0.75/test/annotator_8.json
+    - ${dataset.root}/annotators_seed0_p0.75/test/annotator_9.json
+    - ${dataset.root}/annotators_seed0_p0.75/test/annotator_10.json
+  test_ground_truth_file: ${dataset.root}/annotators_seed0_p0.75/test/ground_truth.json
+
+model:
+  _partial_: True
+  _target_: models.ResNet.ResNet18
+
+training:
+  lr: 0.01
+  batch_size: 128
+  num_epochs: 300
+  clipped_norm: null
+
+hparams:
+  resize: [256, 256]
+  crop_size: [224, 224]
+  mean: null
+  std: null
+  num_clusters: 3
+  lda_logdir: /sda2/cuong/anonymous_annotations/logdir/LDA/80478ca996e84b25aa37ddf6500f1799
+  cluster_probs: [
+    [9.9999976e-01, 2.1428006e-07, 1.4887414e-09],
+    [3.4798532e-07, 9.9999952e-01, 1.1968112e-07],
+    [9.7009647e-08, 7.4452873e-07, 9.9999923e-01],
+    [7.3149544e-09, 1.5263888e-08, 1.0000000e+00],
+    [1.1481855e-07, 8.4520275e-07, 9.9999905e-01],
+    [1.2125000e-07, 9.9999988e-01, 3.9537177e-08],
+    [2.7951489e-07, 9.9999964e-01, 3.5589356e-09],
+    [1.3150998e-07, 9.9999988e-01, 1.1831626e-09],
+    [6.5469507e-08, 9.9999994e-01, 5.5236682e-10],
+    [8.4119847e-08, 9.9999994e-01, 9.7758346e-10],
+    [7.4809314e-08, 9.9999988e-01, 9.8064801e-10]
+  ]
+  epsilon_lower: [0., 0., 0.]
+  epsilon_upper: [0.33, 0.33, 0.34]
