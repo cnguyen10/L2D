@@ -30,9 +30,19 @@ from transformations import (
     RandomCrop,
     Resize,
     RandomHorizontalFlip,
+    ToRGB,
     Normalize,
     ToFloat
 )
+
+
+@nnx.jit
+@nnx.vmap(in_axes=(0, None), out_axes=0)
+def vmap_forward(models: nnx.Module, x: jax.Array) -> jax.Array:
+    """perform a parallel forward pass of an ensemble
+    """
+    out = models(x)
+    return out
 
 
 def init_tx(dataset_length: int, cfg: DictConfig) -> optax.GradientTransformationExtraArgs:
@@ -99,6 +109,7 @@ def initialize_dataloader(
         transformations.append(RandomCrop(crop_size=crop_size))
 
     transformations.append(RandomHorizontalFlip(p=prob_random_h_flip))
+    transformations.append(ToRGB())
     transformations.append(ToFloat())
 
     if mean is not None and std is not None:
@@ -206,13 +217,13 @@ def constrained_posterior(
 def unconstrained_posterior(
     gating_model: nnx.Module,
     x: jax.Array,
-    t: jax.Array,
+    log_t: jax.Array,
     y: jax.Array
 ) -> tuple[jax.Array, jax.Array]:
     """
     """
     # CALCULATE Pr(y | z, t)
-    log_p_y_zt = y[:, None, :] * jnp.log(t)  # (batch, num_experts, num_classes)
+    log_p_y_zt = y[:, None, :] * log_t  # (batch, num_experts, num_classes)
     log_p_y_zt = jnp.sum(a=log_p_y_zt, axis=-1)  # (batch, num_experts)
 
     # P(z | x, gamma)
@@ -230,7 +241,7 @@ def unconstrained_posterior(
 def expectation_step(
     gating_model: nnx.Module,
     x: jax.Array,
-    t: jax.Array,
+    log_t: jax.Array,
     y: jax.Array,
     epsilon_upper: jax.Array,
     epsilon_lower: jax.Array
@@ -240,7 +251,7 @@ def expectation_step(
     p_z_xyt, logit_p_z_x_gamma = unconstrained_posterior(
         gating_model=gating_model,
         x=x,
-        t=t,
+        log_t=log_t,
         y=y
     )
 
@@ -254,7 +265,7 @@ def expectation_step(
 def variational_free_energy(
     gating_model: nnx.Module,
     x: jax.Array,
-    t: jax.Array,
+    log_t: jax.Array,
     y: jax.Array,
     epsilon_upper: jax.Array,
     epsilon_lower: jax.Array
@@ -264,7 +275,7 @@ def variational_free_energy(
     q_z, logit_p_z_x_gamma = expectation_step(
         gating_model=gating_model,
         x=x,
-        t=t,
+        log_t=log_t,
         y=y,
         epsilon_upper=epsilon_upper,
         epsilon_lower=epsilon_lower
@@ -277,57 +288,27 @@ def variational_free_energy(
     return loss
 
 
-def classification_loss(
-    model: nnx.Module,
-    x: jax.Array,
-    y: jax.Array
-) -> jax.Array:
-    """classification loss to train a classifier on ground truth data
-    """
-    logits = model(x)
-    loss = optax.losses.softmax_cross_entropy(
-        logits=logits,
-        labels=y
-    )  # (batch,)
-    loss = jnp.mean(a=loss, axis=0)
-
-    return loss
-
-
-@partial(nnx.jit, static_argnames=('cfg',), donate_argnames=('gating', 'clf'))
+@partial(nnx.jit, static_argnames=('cfg',), donate_argnames=('gating',))
 def expectation_maximisation(
     x: jax.Array,
-    t: jax.Array,
+    log_t: jax.Array,
     y: jax.Array,
     gating: nnx.Optimizer,
-    clf: nnx.Optimizer,
     cfg: DictConfig
-) -> tuple[nnx.Optimizer, jax.Array, dict[str, jax.Array]]:
+) -> tuple[nnx.Optimizer, jax.Array]:
     """perform the variational EM
     """
-    t = jax.nn.one_hot(x=t, num_classes=cfg.dataset.num_classes)  # (batch, num_experts, num_classes)
-    t = optax.smooth_labels(labels=t, alpha=0.01)
-
     y = jax.nn.one_hot(x=y, num_classes=cfg.dataset.num_classes)  # (batch, num_classes)
 
     epsilon_upper = jnp.array(object=cfg.hparams.epsilon_upper)
     epsilon_lower = jnp.array(object=cfg.hparams.epsilon_lower)
-
-    # prediction of classifier
-    clf.model.eval()
-    logits_clf = jax.lax.stop_gradient(x=clf.model(x))
-    clf.model.train()
-    p_clf = jax.nn.softmax(x=logits_clf, axis=-1)  # (batch, num_classes)
-
-    # concatenate to annotations
-    t = jnp.concatenate(arrays=(t, p_clf[:, None, :]), axis=1)  # (batch, num_experts + 1, num_classes)
 
     # gating
     grad_fn_gating = nnx.value_and_grad(f=variational_free_energy, argnums=0)
     loss_gating, grads_gating = grad_fn_gating(
         gating.model,
         x,
-        t,
+        log_t,
         y,
         epsilon_upper,
         epsilon_lower
@@ -336,29 +317,21 @@ def expectation_maximisation(
     # in-place update
     gating.update(grads=grads_gating)
 
-    # classifier
-    grad_fn_clf = nnx.value_and_grad(f=classification_loss, argnums=0)
-    loss_clf, grads_clf = grad_fn_clf(model=clf.model, x=x, y=y)
-    clf.update(grads=grads_clf)
-
-    return gating, clf, {'loss/gating': loss_gating, 'loss/clf': loss_clf}
+    return gating, loss_gating
 
 
 def train(
     dataloader: grain.DatasetIterator,
     gating: nnx.Optimizer,
-    clf: nnx.Optimizer,
+    models: nnx.Module,
     cfg: DictConfig
-) -> tuple[nnx.Optimizer, nnx.Optimizer, dict[str, jax.Array]]:
+) -> tuple[nnx.Optimizer, jax.Array]:
     """
     """
-    loss_metrics_dict = {
-        'loss/gating': nnx.metrics.Average(),
-        'loss/clf': nnx.metrics.Average()
-    }
+    loss_accum = nnx.metrics.Average()
 
     gating.model.train()
-    clf.model.train()
+    models.eval()
 
     for _ in tqdm(
         iterable=range(cfg.dataset.length.train // cfg.training.batch_size),
@@ -371,45 +344,49 @@ def train(
     ):
         samples = next(dataloader)
         x = jnp.asarray(a=samples['image'], dtype=jnp.float32)  # input samples
-        t = jnp.asarray(a=samples['label'], dtype=jnp.int32)  # annotated labels (batch, num_experts)
         y = jnp.asarray(a=samples['ground_truth'], dtype=jnp.int32)  # (batch,)
 
-        gating, clf, loss_dict = expectation_maximisation(
+        # pseudo annotations
+        t = vmap_forward(models=models, x=x)  # (num_experts, batch, num_classes)
+        t = jnp.swapaxes(a=t, axis1=0, axis2=1)  # (batch, num_experts, num_classes)
+        log_t = jax.nn.log_softmax(x=t, axis=-1)
+
+        gating, loss = expectation_maximisation(
             x=x,
-            t=t,
+            log_t=log_t,
             y=y,
             gating=gating,
-            clf=clf,
             cfg=cfg
         )
 
-        if jnp.isnan(loss_dict['loss/gating']):
+        if jnp.isnan(loss):
             raise ValueError('Training loss is NaN.')
 
-        for key in loss_dict:
-            loss_metrics_dict[key].update(values=loss_dict[key])
+        loss_accum.update(values=loss)
 
-    for key in loss_metrics_dict:
-        loss_metrics_dict[key] = loss_metrics_dict[key].compute()
-
-    return (gating, clf, loss_metrics_dict)
+    return gating, loss_accum.compute()
 
 
 def evaluation(
     dataloader: grain.DatasetIterator,
     gating: nnx.Module,
-    clf: nnx.Module,
+    models: nnx.Module,
     cfg: DictConfig
-) -> tuple[jax.Array, jax.Array, jax.Array]:
+) -> jax.Array:
     """
     """
     # set evaluation mode
     gating.eval()
-    clf.eval()
+    models.eval()
 
     accuracy_accum = nnx.metrics.Accuracy()
-    clf_accuracy = nnx.metrics.Accuracy()
-    coverage = nnx.metrics.Average()
+
+    # distribution of humans in the clusters
+    cluster_probs = jnp.array(object=cfg.hparams.cluster_probs, dtype=jnp.float32)
+    cluster_probs = cluster_probs / jnp.sum(a=cluster_probs, axis=-1, keepdims=True)
+
+    cluster_probs = jnp.swapaxes(a=cluster_probs, axis1=0, axis2=1)  # (num_clusters, num_experts)
+    cluster_probs = cluster_probs / jnp.sum(a=cluster_probs, axis=-1, keepdims=True)
 
     for _ in tqdm(
         iterable=range(cfg.dataset.length.test // cfg.training.batch_size),
@@ -423,7 +400,7 @@ def evaluation(
         samples = next(dataloader)
         x = jnp.asarray(a=samples['image'], dtype=jnp.float32)  # input samples
         y = jnp.asarray(a=samples['ground_truth'], dtype=jnp.int32)  # true labels (batch_size,)
-        t = jnp.asarray(a=samples['label'], dtype=jnp.int32)  # annotated labels (batch_size, num_experts)
+        t = jnp.asarray(a=samples['label'], dtype=jnp.float32)  # pseudo labels (batch_size, num_experts)
 
         t = jax.nn.one_hot(x=t, num_classes=cfg.dataset.num_classes)  # (batch_size, num_experts, num_classes)
 
@@ -434,21 +411,17 @@ def evaluation(
 
         selected_expert_ids = jnp.argmax(a=logits_p_z, axis=-1)  # (batch_size,)
 
-        coverage.update(values=(selected_expert_ids == len(cfg.dataset.test_files)) * 1)
+        clusters_weighting = cluster_probs[selected_expert_ids]  # (batch_size, num_experts)
 
-        # accuracy
-        logits_clf = clf(x)  # (batch_size, num_classes)
-        human_and_model_predictions = jnp.concatenate(arrays=(t, logits_clf[:, None, :]), axis=1)
-        queried_predictions = human_and_model_predictions[jnp.arange(len(x)), selected_expert_ids, :]
-        accuracy_accum.update(logits=queried_predictions, labels=y)
+        predictions = clusters_weighting[:, :, None] * t  # (batch_size, num_experts, num_classes)
+        predictions = jnp.mean(a=predictions, axis=1)  # (batch_size, num_classes)
 
-        # classifier accuracy
-        clf_accuracy.update(logits=logits_clf, labels=y)
+        accuracy_accum.update(logits=predictions, labels=y)
 
-    return (accuracy_accum.compute(), clf_accuracy.compute(), coverage.compute())
+    return accuracy_accum.compute()
 
 
-@hydra.main(version_base=None, config_path="./conf", config_name="conf")
+@hydra.main(version_base=None, config_path='./conf', config_name='conf')
 def main(cfg: DictConfig) -> None:
     """
     """
@@ -491,21 +464,27 @@ def main(cfg: DictConfig) -> None:
 
     gating = nnx.Optimizer(
         model=model_fn(
-            num_classes=len(cfg.dataset.train_files) + 1,
+            num_classes=cfg.hparams.num_clusters,
             rngs=nnx.Rngs(jax.random.PRNGKey(seed=random.randint(a=0, b=1_000))),
             dtype=eval(cfg.jax.dtype)
         ),
         tx=init_tx(dataset_length=len(datasource_train), cfg=cfg)
     )
 
-    clf = nnx.Optimizer(
-        model=model_fn(
+    # vmap to create an ensemble of models
+    @nnx.vmap(in_axes=0, out_axes=0)
+    def create_model(key: jax.random.PRNGKey) -> nnx.Module:
+        return model_fn(
             num_classes=cfg.dataset.num_classes,
-            rngs=nnx.Rngs(jax.random.PRNGKey(seed=random.randint(a=0, b=1_000))),
+            rngs=nnx.Rngs(key),
             dtype=eval(cfg.jax.dtype)
-        ),
-        tx=init_tx(dataset_length=len(datasource_train), cfg=cfg)
+        )
+
+    keys = jax.random.split(
+        key=jax.random.PRNGKey(seed=random.randint(a=0, b=100)),
+        num=cfg.hparams.num_clusters
     )
+    models = create_model(keys)
 
     # options to store models
     ckpt_options = ocp.CheckpointManagerOptions(
@@ -514,6 +493,26 @@ def main(cfg: DictConfig) -> None:
         step_format_fixed_length=3,
         enable_async_checkpointing=True
     )
+
+    # load pseudo_human classifiers
+    with ocp.CheckpointManager(
+        directory=cfg.hparams.lda_logdir,
+        options=ckpt_options
+    ) as ckpt_mngr:
+        checkpoint = ckpt_mngr.restore(
+            step=ckpt_mngr.latest_step(),
+            args=ocp.args.Composite(
+                state=ocp.args.StandardRestore(
+                    item=nnx.state(node=models)
+                ),
+                alpha=ocp.args.ArrayRestore(
+                    item=jnp.array(object=1., dtype=jnp.float32)
+                )
+            )
+        )
+
+        nnx.update(models, checkpoint.state)
+        del checkpoint
     # endregion
 
     mlflow.set_tracking_uri(uri=cfg.experiment.tracking_uri)
@@ -541,8 +540,7 @@ def main(cfg: DictConfig) -> None:
         # enable an orbax checkpoint manager to save model's parameters
         with ocp.CheckpointManager(
             directory=ckpt_dir,
-            options=ckpt_options,
-            item_names=('gating', 'clf')
+            options=ckpt_options
         ) as ckpt_mngr:
             # region LOGGING and RESTORING
             if cfg.experiment.run_id is None:
@@ -552,25 +550,15 @@ def main(cfg: DictConfig) -> None:
                 mlflow.log_params(
                     params=flatten_dict(xs=OmegaConf.to_container(cfg=cfg), sep='.')
                 )
-
-                # log source code
-                mlflow.log_artifact(
-                    local_path=os.path.abspath(path=__file__),
-                    artifact_path='source_code'
-                )
             else:
                 start_epoch_id = ckpt_mngr.latest_step()
 
                 checkpoint = ckpt_mngr.restore(
                     step=start_epoch_id,
-                    args=ocp.args.Composite(
-                        gating=ocp.args.StandardRestore(item=nnx.state(node=gating.model)),
-                        clf=ocp.args.StandardRestore(item=nnx.state(node=clf.model))
-                    )
+                    args=ocp.args.StandardRestore(item=nnx.state(node=gating.model))
                 )
 
                 nnx.update(gating.model, checkpoint.gating)
-                nnx.update(clf.model, checkpoint.clf)
 
                 del checkpoint
             # endregion
@@ -619,32 +607,25 @@ def main(cfg: DictConfig) -> None:
                 disable=not cfg.data_loading.progress_bar
             ):
                 # training
-                gating, clf, loss_dict = train(
+                gating, loss = train(
                     dataloader=dataloader_train,
                     gating=gating,
-                    clf=clf,
+                    models=models,
                     cfg=cfg
                 )
 
-                mlflow.log_metrics(
-                    metrics=loss_dict,
-                    step=epoch_id + 1,
-                    synchronous=False
-                )
-
                 # evaluation
-                accuracy, clf_accuracy, coverage = evaluation(
+                accuracy = evaluation(
                     dataloader=dataloader_test,
                     gating=gating.model,
-                    clf=clf.model,
+                    models=models,
                     cfg=cfg
                 )
 
                 mlflow.log_metrics(
                     metrics={
-                        'accuracy/l2d': accuracy,
-                        'accuracy/clf': clf_accuracy,
-                        'coverage/clf': coverage
+                        'loss': loss,
+                        'accuracy': accuracy
                     },
                     step=epoch_id + 1,
                     synchronous=False
@@ -656,10 +637,7 @@ def main(cfg: DictConfig) -> None:
                 # save parameters asynchronously
                 ckpt_mngr.save(
                     step=epoch_id + 1,
-                    args=ocp.args.Composite(
-                        gating=ocp.args.StandardSave(nnx.state(node=gating.model)),
-                        clf=ocp.args.StandardSave(nnx.state(node=clf.model))
-                    )
+                    args=ocp.args.StandardSave(nnx.state(node=gating.model))
                 )
 
     return None
@@ -667,8 +645,8 @@ def main(cfg: DictConfig) -> None:
 
 if __name__ == '__main__':
     # cache Jax compilation to reduce compilation time in next runs
-    jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
-    jax.config.update("jax_persistent_cache_min_entry_size_bytes", 0)
-    jax.config.update("jax_persistent_cache_min_compile_time_secs", 120)
+    jax.config.update('jax_compilation_cache_dir', '/tmp/jax_cache')
+    jax.config.update('jax_persistent_cache_min_entry_size_bytes', 0)
+    jax.config.update('jax_persistent_cache_min_compile_time_secs', 120)
 
     main()

@@ -62,6 +62,17 @@ class RandomHorizontalFlip(grain.RandomMapTransform):
         return element
 
 
+class ToRGB(grain.MapTransform):
+    def map(self, element: dict[str, Any]) -> dict[str, Any]:
+        """convert a gray-scale image to a color one
+        """
+        if len(element['image'].shape) == 2:
+            to_rgb = A.ToRGB(p=1.0)
+            element['image'] = to_rgb(image=element['image'])['image']
+        
+        return element
+
+
 class ToFloat(grain.MapTransform):
     def map(self, element: dict[str, Any]) -> dict[str, Any]:
         """convert int image to float image
