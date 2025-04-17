@@ -18,7 +18,6 @@ experiment:
 training:
   momentum: 0.9
   weight_decay: 0.0005
-  seed: 44
 
 hparams:
   prob_random_h_flip: 0.5
@@ -31,6 +30,6 @@ data_loading:
 
 jax:
   platform: cuda
-  mem: 0.4
+  mem: 0.5
   disable_jit: False
   dtype: jnp.bfloat16

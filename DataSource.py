@@ -96,7 +96,9 @@ class ImageDataSource(grain.RandomAccessDataSource):
         self,
         annotation_files: list[str],
         ground_truth_file: str,
-        root: str = None
+        root: str = None,
+        num_samples: int = None,
+        seed: int = 0
     ) -> None:
         """make the dataset from multiple annotation files.
 
@@ -107,16 +109,29 @@ class ImageDataSource(grain.RandomAccessDataSource):
             annotation_files: list of pathes to the json files of annotators
             ground_truth_file: path to the json file of ground truth
             root: the directory to the dataset folder
-            shape: the new shape (width and height) of the resized image
+            num_samples: number of samples needed. If None, then the whole dataset
+            seed: random seed when sampling the number of samples
 
         Returns:
             dataset:
         """
         self.root = root if root is not None else ''
-        self._data = combine_data(
+        data = combine_data(
             annotation_files=annotation_files,
             ground_truth_file=ground_truth_file
         )
+
+        if num_samples is not None:
+            rng = np.random.default_rng(seed=seed)
+            ids = rng.choice(
+                a=np.arange(len(data)),
+                size=num_samples,
+                replace=False
+            )
+
+            data = [data[i] for i in ids]
+        
+        self._data = data
 
     def __getitem__(self, idx: int) -> dict[str, np.ndarray]:
         """

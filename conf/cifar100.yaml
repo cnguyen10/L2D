@@ -25,6 +25,8 @@ training:
   batch_size: 128
   num_epochs: 100
   clipped_norm: 10
+  seed: 44
+  num_samples: null
 
 hparams:
   resize: null
