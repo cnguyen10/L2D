@@ -125,6 +125,40 @@ def initialize_dataloader(
     return iter(data_loader)
 
 
+@partial(jax.jit, static_argnames=('num_experts',))
+def get_predictions_combinations_multiple_experts(
+    t: jax.Array,
+    key: jax.random.PRNGKey,
+    num_experts: int
+) -> jax.Array:
+    """randomly select a subset of annotatotrs and calculate the soft-predictions
+
+    Args:
+        t: the annotated labels (batch, num_experts, num_classes)
+        num_experts_per_group: the number of experts in one group
+
+    Returns:
+        predictions: the soft-predictions of multiple experts (batch, num_classes)
+    """
+    annotations_multiple_experts = jnp.zeros_like(a=t, dtype=jnp.float32)  # (batch, num_experts, num_classes)
+
+    # calculate the soft-predictions of multiple experts
+    for num_experts_per_group in range(0, num_experts, 1):
+        # get a new random key
+        key, _ = jax.random.split(key=key, num=2)
+
+        # get a combination of experts
+        expert_ids = jax.random.choice(key=key, a=jnp.arange(num_experts), shape=(num_experts_per_group + 1,), replace=False)
+
+        predictions = t[:, expert_ids, :]  # (batch, num_experts_per_group, num_classes)
+        soft_prediction = jnp.mean(a=predictions, axis=1)  # (batch, num_classes)
+
+        # store the predictions
+        annotations_multiple_experts = annotations_multiple_experts.at[:, num_experts_per_group, :].set(soft_prediction)
+
+    return annotations_multiple_experts
+
+
 @jax.jit
 def get_unnorm_log_q_z_tilde(q_uncon: jax.Array, params: dict[str, jax.Array]) -> jax.Array:
     """calculate the un-normalised q(z)
@@ -286,13 +320,12 @@ def expectation_maximisation(
 ) -> tuple[nnx.Optimizer, float]:
     """perform the variational EM
     """
-    t = jax.nn.one_hot(x=t, num_classes=cfg.dataset.num_classes)  # (batch, num_experts, num_classes)
-    t = optax.smooth_labels(labels=t, alpha=0.01)
-
     y = jax.nn.one_hot(x=y, num_classes=cfg.dataset.num_classes)  # (batch, num_classes)
 
-    epsilon_upper = jnp.array(object=cfg.hparams.epsilon_upper)
-    epsilon_lower = jnp.array(object=cfg.hparams.epsilon_lower)
+    epsilon_lower = jnp.zeros(shape=(len(cfg.dataset.train_files),), dtype=jnp.float32)
+    epsilon_upper = jnp.arange(start=1, stop=len(cfg.dataset.train_files) + 1, step=1, dtype=jnp.float32)
+    epsilon_upper = 1 / epsilon_upper
+    epsilon_upper /= jnp.sum(a=epsilon_upper, axis=0, keepdims=True)
 
     # gating
     grad_fn_gating = nnx.value_and_grad(f=variational_free_energy, argnums=0)
@@ -334,6 +367,15 @@ def train(
         x = jnp.asarray(a=samples['image'], dtype=jnp.float32)  # input samples
         t = jnp.asarray(a=samples['label'], dtype=jnp.int32)  # annotated labels (batch, num_experts)
         y = jnp.asarray(a=samples['ground_truth'], dtype=jnp.int32)  # (batch,)
+
+        t = jax.nn.one_hot(x=t, num_classes=cfg.dataset.num_classes)  # (batch, num_experts, num_classes)
+        t = optax.smooth_labels(labels=t, alpha=0.01)
+
+        t = get_predictions_combinations_multiple_experts(
+            t=t,
+            key=jax.random.PRNGKey(seed=random.randint(a=0, b=10_000)),
+            num_experts=len(cfg.dataset.train_files)
+        )
 
         gating, loss = expectation_maximisation(
             x=x,
@@ -378,6 +420,12 @@ def evaluation(
         t = jnp.asarray(a=samples['label'], dtype=jnp.int32)  # annotated labels (batch_size, num_experts)
 
         t = jax.nn.one_hot(x=t, num_classes=cfg.dataset.num_classes)  # (batch_size, num_experts, num_classes)
+
+        t = get_predictions_combinations_multiple_experts(
+            t=t,
+            key=jax.random.PRNGKey(seed=random.randint(a=0, b=10_000)),
+            num_experts=len(cfg.dataset.train_files)
+        )
 
         # Pr(z | x, gamma)
         logits_p_z = gating(x)  # (batch_size, num_experts)

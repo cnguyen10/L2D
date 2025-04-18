@@ -1,19 +1,23 @@
 dataset:
   name: cifar100
-  root: /home/cn0025/datasets/cifar100/ciFAIR-100
+  root: /sda2/datasets/cifar100/ciFAIR-100
   num_classes: 100
   noise_rate: 0.7
   train_files:
-    - ${dataset.root}/synthetic_experts_2/train_0_1_2_3_4_5_6_7_8_9_10_11_12_13_14_${dataset.noise_rate}_3.json
-    - ${dataset.root}/synthetic_experts_2/train_0_1_2_3_4_5_6_7_8_9_10_11_12_13_14_${dataset.noise_rate}_4.json
-    - ${dataset.root}/synthetic_experts_2/train_5_6_7_8_9_10_11_12_13_14_15_16_17_18_19_${dataset.noise_rate}_13.json
-    - ${dataset.root}/synthetic_experts_2/train_5_6_7_8_9_10_11_12_13_14_15_16_17_18_19_${dataset.noise_rate}_14.json
+    - ${dataset.root}/synthetic_experts_3/train_0_1_2_3_4_5_6_7_8_9_${dataset.noise_rate}_2.json
+    - ${dataset.root}/synthetic_experts_3/train_0_1_2_3_4_5_6_7_8_9_${dataset.noise_rate}_3.json
+    - ${dataset.root}/synthetic_experts_3/train_5_6_7_8_9_10_11_12_13_14_${dataset.noise_rate}_4.json
+    - ${dataset.root}/synthetic_experts_3/train_5_6_7_8_9_10_11_12_13_14_${dataset.noise_rate}_5.json
+    - ${dataset.root}/synthetic_experts_3/train_10_11_12_13_14_15_16_17_18_19_${dataset.noise_rate}_0.json
+    - ${dataset.root}/synthetic_experts_3/train_10_11_12_13_14_15_16_17_18_19_${dataset.noise_rate}_1.json
   train_ground_truth_file: ${dataset.root}/train.json
   test_files:
-    - ${dataset.root}/synthetic_experts_2/test_0_1_2_3_4_5_6_7_8_9_10_11_12_13_14_${dataset.noise_rate}_3.json
-    - ${dataset.root}/synthetic_experts_2/test_0_1_2_3_4_5_6_7_8_9_10_11_12_13_14_${dataset.noise_rate}_4.json
-    - ${dataset.root}/synthetic_experts_2/test_5_6_7_8_9_10_11_12_13_14_15_16_17_18_19_${dataset.noise_rate}_13.json
-    - ${dataset.root}/synthetic_experts_2/test_5_6_7_8_9_10_11_12_13_14_15_16_17_18_19_${dataset.noise_rate}_14.json
+    - ${dataset.root}/synthetic_experts_3/test_0_1_2_3_4_5_6_7_8_9_${dataset.noise_rate}_2.json
+    - ${dataset.root}/synthetic_experts_3/test_0_1_2_3_4_5_6_7_8_9_${dataset.noise_rate}_3.json
+    - ${dataset.root}/synthetic_experts_3/test_5_6_7_8_9_10_11_12_13_14_${dataset.noise_rate}_4.json
+    - ${dataset.root}/synthetic_experts_3/test_5_6_7_8_9_10_11_12_13_14_${dataset.noise_rate}_5.json
+    - ${dataset.root}/synthetic_experts_3/test_10_11_12_13_14_15_16_17_18_19_${dataset.noise_rate}_0.json
+    - ${dataset.root}/synthetic_experts_3/test_10_11_12_13_14_15_16_17_18_19_${dataset.noise_rate}_1.json
   test_ground_truth_file: ${dataset.root}/test.json
 
 model:
@@ -31,5 +35,5 @@ hparams:
   crop_size: [32, 32]
   mean: null
   std: null
-  epsilon_lower: [0., 0., 0., 0.]
-  epsilon_upper: [0.25, 0.25, 0.25, 0.25]
+  # epsilon_lower: jnp.array(object=[0., 0., 0., 0., 0., 0., 0.], dtype=jnp.float32)
+  # epsilon_upper: jnp.array(object=[1., 1., 1., 1., 1/2, 1/3, 1/4], dtype=jnp.float32)

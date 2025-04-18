@@ -10,7 +10,7 @@ hydra:
     dir: .
 
 experiment:
-  name: L2D
+  name: lecodu
   tracking_uri: sqlite:///l2d.db
   logdir: ./logdir
   run_id: null
