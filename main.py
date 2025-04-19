@@ -141,14 +141,15 @@ def get_predictions_combinations_multiple_experts(
         predictions: the soft-predictions of multiple experts (batch, num_classes)
     """
     annotations_multiple_experts = jnp.zeros_like(a=t, dtype=jnp.float32)  # (batch, num_experts, num_classes)
+    annotations_multiple_experts = annotations_multiple_experts[:, 1:, :]  # (batch, num_experts - 1, num_classes)
 
     # calculate the soft-predictions of multiple experts
-    for num_experts_per_group in range(0, num_experts, 1):
+    for num_experts_per_group in range(0, num_experts - 1, 1):
         # get a new random key
         key, _ = jax.random.split(key=key, num=2)
 
         # get a combination of experts
-        expert_ids = jax.random.choice(key=key, a=jnp.arange(num_experts), shape=(num_experts_per_group + 1,), replace=False)
+        expert_ids = jax.random.choice(key=key, a=jnp.arange(num_experts), shape=(num_experts_per_group + 2,), replace=False)
 
         predictions = t[:, expert_ids, :]  # (batch, num_experts_per_group, num_classes)
         soft_prediction = jnp.mean(a=predictions, axis=1)  # (batch, num_classes)
@@ -156,7 +157,9 @@ def get_predictions_combinations_multiple_experts(
         # store the predictions
         annotations_multiple_experts = annotations_multiple_experts.at[:, num_experts_per_group, :].set(soft_prediction)
 
-    return annotations_multiple_experts
+    annotations = jnp.concatenate(arrays=(t, annotations_multiple_experts), axis=1)  # (batch, 2 num_experts - 1, num_classes)
+
+    return annotations
 
 
 @jax.jit
@@ -322,8 +325,10 @@ def expectation_maximisation(
     """
     y = jax.nn.one_hot(x=y, num_classes=cfg.dataset.num_classes)  # (batch, num_classes)
 
-    epsilon_lower = jnp.zeros(shape=(len(cfg.dataset.train_files),), dtype=jnp.float32)
-    epsilon_upper = jnp.arange(start=1, stop=len(cfg.dataset.train_files) + 1, step=1, dtype=jnp.float32)
+    epsilon_lower = jnp.zeros(shape=(2*len(cfg.dataset.train_files) - 1,), dtype=jnp.float32)
+
+    epsilon_upper = jnp.arange(start=2, stop=len(cfg.dataset.train_files) + 1, step=1, dtype=jnp.float32)
+    epsilon_upper = jnp.concatenate(arrays=(jnp.ones(shape=(len(cfg.dataset.train_files), )), epsilon_upper), axis=0)
     epsilon_upper = 1 / epsilon_upper
     epsilon_upper /= jnp.sum(a=epsilon_upper, axis=0, keepdims=True)
 
@@ -460,8 +465,10 @@ def main(cfg: DictConfig) -> None:
         num_samples=cfg.training.num_samples,
         seed=cfg.training.seed
     )
+    test_files = cfg.dataset.test_files
+    random.shuffle(test_files)
     datasource_test = ImageDataSource(
-        annotation_files=cfg.dataset.test_files,
+        annotation_files=test_files,
         ground_truth_file=cfg.dataset.test_ground_truth_file,
         root=cfg.dataset.root
     )
@@ -486,7 +493,7 @@ def main(cfg: DictConfig) -> None:
 
     gating = nnx.Optimizer(
         model=model_fn(
-            num_classes=len(cfg.dataset.train_files),
+            num_classes=2*len(cfg.dataset.train_files) - 1,
             rngs=nnx.Rngs(jax.random.PRNGKey(seed=random.randint(a=0, b=1_000))),
             dtype=eval(cfg.jax.dtype)
         ),
