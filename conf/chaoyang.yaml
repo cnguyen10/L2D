@@ -1,0 +1,36 @@
+dataset:
+  name: chaoyang
+  root: /sda2/datasets/chaoyang
+  num_classes: 4
+  train_files:
+    - ${dataset.root}/annotations_3/label_A_train.json
+    - ${dataset.root}/annotations_3/label_B_train.json
+    - ${dataset.root}/annotations_3/label_C_train.json
+  train_ground_truth_file: ${dataset.root}/annotations_3/train.json
+  test_files:
+    - ${dataset.root}/annotations_3/label_A_test.json
+    - ${dataset.root}/annotations_3/label_B_test.json
+    - ${dataset.root}/annotations_3/label_C_test.json
+  test_ground_truth_file: ${dataset.root}/annotations_3/test.json
+
+model:
+  _partial_: True
+  _target_: models.ResNet.ResNet18
+  in_channels: 3  # color images: 3, black and white: 1
+  conv1_kernel_size: [7, 7]
+
+training:
+  lr: 0.001
+  batch_size: 128
+  num_epochs: 300
+  clipped_norm: null
+  num_samples: null
+
+hparams:
+  resize: [256, 256]
+  crop_size: [224, 224]
+  mean: null
+  std: null
+  epsilon_lower: [0., 0., 0., 0.]
+  epsilon_upper: [0.25, 0.25, 0.25, 0.25]
+  clf_run_id: null

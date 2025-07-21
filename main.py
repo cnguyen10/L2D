@@ -1,6 +1,5 @@
 import os
 from pathlib import Path
-import random
 from functools import partial
 
 from tqdm import tqdm
@@ -56,7 +55,7 @@ def init_tx(dataset_length: int, cfg: DictConfig) -> optax.GradientTransformatio
     # define an optimizer
     tx = optax.chain(
         weight_decay,
-        optax.add_noise(eta=0.01, gamma=0.55, seed=random.randint(a=0, b=100)),
+        optax.add_noise(eta=0.01, gamma=0.55, seed=cfg.training.seed),
         optax.clip_by_global_norm(max_norm=cfg.training.clipped_norm) \
             if cfg.training.clipped_norm is not None else optax.identity(),
         optax.sgd(learning_rate=lr_schedule_fn, momentum=cfg.training.momentum)
@@ -494,7 +493,8 @@ def main(cfg: DictConfig) -> None:
     gating = nnx.Optimizer(
         model=model_fn(
             num_classes=len(cfg.dataset.train_files) + 1,
-            rngs=nnx.Rngs(jax.random.PRNGKey(seed=random.randint(a=0, b=1_000))),
+            rngs=nnx.Rngs(jax.random.key(seed=cfg.training.seed)),
+            dropout_rate=cfg.training.dropout_rate,
             dtype=eval(cfg.jax.dtype)
         ),
         tx=init_tx(dataset_length=len(datasource_train), cfg=cfg)
@@ -503,7 +503,8 @@ def main(cfg: DictConfig) -> None:
     clf = nnx.Optimizer(
         model=model_fn(
             num_classes=cfg.dataset.num_classes,
-            rngs=nnx.Rngs(jax.random.PRNGKey(seed=random.randint(a=0, b=1_000))),
+            rngs=nnx.Rngs(jax.random.key(seed=cfg.training.seed)),
+            dropout_rate=cfg.training.dropout_rate,
             dtype=eval(cfg.jax.dtype)
         ),
         tx=init_tx(dataset_length=len(datasource_train), cfg=cfg)
@@ -582,7 +583,7 @@ def main(cfg: DictConfig) -> None:
                 data_source=datasource_train,
                 num_epochs=cfg.training.num_epochs - start_epoch_id,
                 shuffle=True,
-                seed=random.randint(a=0, b=255),
+                seed=cfg.training.seed,
                 batch_size=cfg.training.batch_size,
                 crop_size=cfg.hparams.crop_size,
                 resize=cfg.hparams.resize,
@@ -598,7 +599,7 @@ def main(cfg: DictConfig) -> None:
                 data_source=datasource_test,
                 num_epochs=cfg.training.num_epochs - start_epoch_id,
                 shuffle=False,
-                seed=random.randint(a=0, b=255),
+                seed=0,
                 batch_size=cfg.training.batch_size,
                 crop_size=cfg.hparams.crop_size,
                 resize=cfg.hparams.resize,
@@ -634,23 +635,24 @@ def main(cfg: DictConfig) -> None:
                     synchronous=False
                 )
 
-                # evaluation
-                accuracy, clf_accuracy, coverage = evaluation(
-                    dataloader=dataloader_test,
-                    gating=gating.model,
-                    clf=clf.model,
-                    cfg=cfg
-                )
+                if (epoch_id + 1) % cfg.training.eval_every_n_epochs == 0:
+                    # evaluation
+                    accuracy, clf_accuracy, coverage = evaluation(
+                        dataloader=dataloader_test,
+                        gating=gating.model,
+                        clf=clf.model,
+                        cfg=cfg
+                    )
 
-                mlflow.log_metrics(
-                    metrics={
-                        'accuracy/l2d': accuracy,
-                        'accuracy/clf': clf_accuracy,
-                        'coverage/clf': coverage
-                    },
-                    step=epoch_id + 1,
-                    synchronous=False
-                )
+                    mlflow.log_metrics(
+                        metrics={
+                            'accuracy/l2d': accuracy,
+                            'accuracy/clf': clf_accuracy,
+                            'coverage/clf': coverage
+                        },
+                        step=epoch_id + 1,
+                        synchronous=False
+                    )
 
                 # wait until completing the asynchronous saving
                 ckpt_mngr.wait_until_finished()
