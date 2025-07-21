@@ -22,10 +22,7 @@ training:
   weight_decay: 0.0005
   eval_every_n_epochs: 10
   dropout_rate: 0.1
-  seed: 44
-
-hparams:
-  prob_random_h_flip: 0.5
+  seed: 0
 
 data_loading:
   progress_bar: True

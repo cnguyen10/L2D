@@ -29,6 +29,14 @@ model:
   in_channels: 3  # color images: 3, black and white: 1
   conv1_kernel_size: [7, 7]
 
+data_augmentation:
+  resize: [256, 256]
+  padding_px: null
+  crop_size: [224, 224]
+  prob_random_flip: 0.5
+  mean: null
+  std: null
+
 training:
   lr: 0.0025
   batch_size: 64
@@ -37,10 +45,5 @@ training:
   num_samples: null
 
 hparams:
-  resize: null
-  crop_size: [224, 224]
-  mean: null
-  std: null
-  num_eval_samples: null
   epsilon_lower: [0., 0., 0., 0., 0., 0., 0., 0., 0.]
   epsilon_upper: [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.2]

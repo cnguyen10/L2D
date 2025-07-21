@@ -28,37 +28,48 @@ from DataSource import ImageDataSource
 from transformations import (
     RandomCrop,
     Resize,
+    CropAndPad,
     RandomHorizontalFlip,
+    ToRGB,
     Normalize,
     ToFloat
 )
 
 
-def init_tx(dataset_length: int, cfg: DictConfig) -> optax.GradientTransformationExtraArgs:
+def init_tx(
+    dataset_length: int,
+    lr: float,
+    batch_size: int,
+    num_epochs: int,
+    weight_decay: float,
+    momentum: float,
+    clipped_norm: float,
+    seed: int
+) -> optax.GradientTransformationExtraArgs:
     """initialize parameters of an optimizer
     """
-     # add L2 regularisation(aka weight decay)
-    weight_decay = optax.masked(
+    # add L2 regularization(a.k.a. weight decay)
+    l2_regularization = optax.masked(
         inner=optax.add_decayed_weights(
-            weight_decay=cfg.training.weight_decay,
+            weight_decay=weight_decay,
             mask=None
         ),
         mask=lambda p: jax.tree_util.tree_map(lambda x: x.ndim != 1, p)
     )
 
-    num_iters_per_epoch = dataset_length // cfg.training.batch_size
+    num_iters_per_epoch = dataset_length // batch_size
     lr_schedule_fn = optax.cosine_decay_schedule(
-        init_value=cfg.training.lr,
-        decay_steps=(cfg.training.num_epochs + 10) * num_iters_per_epoch
+        init_value=lr,
+        decay_steps=(num_epochs + 10) * num_iters_per_epoch
     )
 
     # define an optimizer
     tx = optax.chain(
-        weight_decay,
-        optax.add_noise(eta=0.01, gamma=0.55, seed=cfg.training.seed),
-        optax.clip_by_global_norm(max_norm=cfg.training.clipped_norm) \
-            if cfg.training.clipped_norm is not None else optax.identity(),
-        optax.sgd(learning_rate=lr_schedule_fn, momentum=cfg.training.momentum)
+        l2_regularization,
+        optax.clip_by_global_norm(max_norm=clipped_norm) \
+            if clipped_norm is not None else optax.identity(),
+        optax.add_noise(eta=0.01, gamma=0.55, seed=seed),
+        optax.sgd(learning_rate=lr_schedule_fn, momentum=momentum)
     )
 
     return tx
@@ -70,15 +81,17 @@ def initialize_dataloader(
     shuffle: bool,
     seed: int,
     batch_size: int,
-    crop_size: tuple[int, int] = None,
-    resize: tuple[int, int] = None,
-    mean: float = None,
-    std: float = None,
-    prob_random_h_flip: float = None,
+    crop_size: tuple[int, int] | None = None,
+    padding_px: int | list[int] | None = None,
+    resize: tuple[int, int] | None = None,
+    mean: float | None = None,
+    std: float | None = None,
+    p_flip: float | None = None,
+    is_color_img: bool = True,
     num_workers: int = 0,
     num_threads: int = 1,
     prefetch_size: int = 1
-) -> grain.IterDataset:
+) -> grain.DataLoader:
     """
     """
     index_sampler = grain.IndexSampler(
@@ -93,11 +106,20 @@ def initialize_dataloader(
 
     if resize is not None:
         transformations.append(Resize(resize_shape=resize))
+    
+    if padding_px is not None:
+        transformations.append(CropAndPad(px=padding_px))
 
     if crop_size is not None:
         transformations.append(RandomCrop(crop_size=crop_size))
 
-    transformations.append(RandomHorizontalFlip(p=prob_random_h_flip))
+    if p_flip is not None:
+        transformations.append(RandomHorizontalFlip(p=p_flip))
+        # transformations.append(RandomVerticalFlip(p=p_flip))
+
+    if not is_color_img:
+        transformations.append(ToRGB())
+
     transformations.append(ToFloat())
 
     if mean is not None and std is not None:
@@ -122,7 +144,7 @@ def initialize_dataloader(
         )
     )
 
-    return iter(data_loader)
+    return data_loader
 
 
 @jax.jit
@@ -410,8 +432,9 @@ def evaluation(
     clf_accuracy = nnx.metrics.Accuracy()
     coverage = nnx.metrics.Average()
 
-    for _ in tqdm(
-        iterable=range(cfg.dataset.length.test // cfg.training.batch_size),
+    for samples in tqdm(
+        iterable=dataloader,
+        total=cfg.dataset.length.test // cfg.training.batch_size + 1,
         desc='eval',
         ncols=80,
         leave=False,
@@ -419,7 +442,6 @@ def evaluation(
         colour='blue',
         disable=not cfg.data_loading.progress_bar
     ):
-        samples = next(dataloader)
         x = jnp.asarray(a=samples['image'], dtype=jnp.float32)  # input samples
         y = jnp.asarray(a=samples['ground_truth'], dtype=jnp.int32)  # true labels (batch_size,)
         t = jnp.asarray(a=samples['label'], dtype=jnp.int32)  # annotated labels (batch_size, num_experts)
@@ -497,7 +519,16 @@ def main(cfg: DictConfig) -> None:
             dropout_rate=cfg.training.dropout_rate,
             dtype=eval(cfg.jax.dtype)
         ),
-        tx=init_tx(dataset_length=len(datasource_train), cfg=cfg)
+        tx=init_tx(
+            dataset_length=len(datasource_train),
+            lr=cfg.training.lr,
+            batch_size=cfg.training.batch_size,
+            num_epochs=cfg.training.num_epochs,
+            weight_decay=cfg.training.weight_decay,
+            momentum=cfg.training.momentum,
+            clipped_norm=cfg.training.clipped_norm,
+            seed=cfg.training.seed
+        )
     )
 
     clf = nnx.Optimizer(
@@ -507,7 +538,16 @@ def main(cfg: DictConfig) -> None:
             dropout_rate=cfg.training.dropout_rate,
             dtype=eval(cfg.jax.dtype)
         ),
-        tx=init_tx(dataset_length=len(datasource_train), cfg=cfg)
+        tx=init_tx(
+            dataset_length=len(datasource_train),
+            lr=cfg.training.lr,
+            batch_size=cfg.training.batch_size,
+            num_epochs=cfg.training.num_epochs,
+            weight_decay=cfg.training.weight_decay,
+            momentum=cfg.training.momentum,
+            clipped_norm=cfg.training.clipped_norm,
+            seed=cfg.training.seed
+        )
     )
 
     # options to store models
@@ -581,31 +621,35 @@ def main(cfg: DictConfig) -> None:
             # region DATA LOADERS
             dataloader_train = initialize_dataloader(
                 data_source=datasource_train,
-                num_epochs=cfg.training.num_epochs - start_epoch_id,
+                num_epochs=cfg.training.num_epochs - start_epoch_id + 1,
                 shuffle=True,
                 seed=cfg.training.seed,
                 batch_size=cfg.training.batch_size,
-                crop_size=cfg.hparams.crop_size,
-                resize=cfg.hparams.resize,
-                mean=cfg.hparams.mean,
-                std=cfg.hparams.std,
-                prob_random_h_flip=cfg.hparams.prob_random_h_flip,
+                resize=cfg.data_augmentation.resize,
+                padding_px=cfg.data_augmentation.padding_px,
+                crop_size=cfg.data_augmentation.crop_size,
+                mean=cfg.data_augmentation.mean,
+                std=cfg.data_augmentation.std,
+                p_flip=cfg.data_augmentation.prob_random_flip,
                 num_workers=cfg.data_loading.num_workers,
                 num_threads=cfg.data_loading.num_threads,
                 prefetch_size=cfg.data_loading.prefetch_size
             )
+            dataloader_train = iter(dataloader_train)
 
             dataloader_test = initialize_dataloader(
                 data_source=datasource_test,
-                num_epochs=cfg.training.num_epochs - start_epoch_id,
+                num_epochs=1,
                 shuffle=False,
                 seed=0,
                 batch_size=cfg.training.batch_size,
-                crop_size=cfg.hparams.crop_size,
-                resize=cfg.hparams.resize,
-                mean=cfg.hparams.mean,
-                std=cfg.hparams.std,
-                prob_random_h_flip=cfg.hparams.prob_random_h_flip,
+                resize=cfg.data_augmentation.crop_size,
+                padding_px=None,
+                crop_size=None,
+                mean=cfg.data_augmentation.mean,
+                std=cfg.data_augmentation.std,
+                p_flip=None,
+                is_color_img=True,
                 num_workers=cfg.data_loading.num_workers,
                 num_threads=cfg.data_loading.num_threads,
                 prefetch_size=cfg.data_loading.prefetch_size
